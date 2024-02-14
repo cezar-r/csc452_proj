@@ -22,7 +22,6 @@ int occupiedSlots = 0;
 Process *curProcess;
 
 int globalPid = 2;
-processQueue priortyQueues[7];
 
 /**
  * This function is responsible for setting up or initializing our process table.
@@ -44,32 +43,7 @@ void setUpInit()
         processTable[i].runQueueNext = NULL;
         processTable[i].nextSibling = NULL;
         processTable[i].firstChild = NULL;
-        processTable[i].waitingOnChild = false;
-        processTable[i].startTime = 0;
     }
-    for (int i = 0; i < 7; i++)
-    { // Initialize run list
-        priortyQueues[i].head = NULL;
-        priortyQueues[i].tail = NULL;
-    }
-}
-
-int disableInterrupts(void)
-{
-    return USLOSS_PsrSet(USLOSS_PsrGet() & ~(USLOSS_PSR_CURRENT_INT));
-}
-
-int restoreInterrupts(int val)
-{
-    // USLOSS_PsrSet(val);
-    USLOSS_PsrSet(3);
-}
-
-int getCurTime(void)
-{
-
-    int val = currentTime();
-    return val;
 }
 
 /**
@@ -107,8 +81,6 @@ void phase1_init(void)
     processTable[1].stack = malloc(USLOSS_MIN_STACK);
     processTable[1].tableStatus = OCCUPIED;
     // curProcess = &processTable[1];
-    priortyQueues[6].head = processTable[1];
-    priortyQueues[6].tail = processTable[1];
     russ_ContextInit(processTable[1].pid, &(processTable[1].context), processTable[1].stack, USLOSS_MIN_STACK, &init_main, NULL);
     occupiedSlots += 1;
 }
@@ -182,7 +154,6 @@ int spork(char *name, int (*startFunc)(char *), char *arg,
         processTable[slot].nextSibling = tmpProcess;
     }
 
-    addQueue(processTable[slot]);
     return processTable[slot].pid;
 }
 
@@ -310,134 +281,6 @@ void dumpProcesses(void)
             }
         }
     }
-}
-
-/*
- * This is a helper function that adds process to the priortyQueues
- * proc: the process being added to the run list.
- */
-void addQueue(Process *proc)
-{
-
-    if (priortyQueues[proc->priority].head == NULL)
-    {
-        priortyQueues[proc->priority].head = priortyQueues[proc->priority].tail = proc;
-        proc->runQueueNext = NULL;
-    }
-    else
-    {
-        Process *tmp = priortyQueues[proc->priority].tail;
-        if (tmp->runQueueNext == NULL)
-        {
-            tmp->runQueueNext = proc;
-        }
-        priortyQueues[proc->priority].tail = proc;
-    }
-}
-
-void removeQueue(Process *proc)
-{
-    if (priortyQueues[proc->priority].head == proc)
-    {
-        priortyQueues[proc->priority].head = priortyQueues[proc->priority].head->runQueueNext;
-    }
-    else
-    {
-        Process *headNode = priortyQueues[proc->priority].head;
-        while (headNode->runQueueNext != proc)
-        {
-            headNode = headNode->runQueueNext;
-        }
-        headNode->runQueueNext = headNode->runQueueNext->runQueueNext;
-    }
-}
-
-void moveBackQueue(Process *proc)
-{
-    if (priortyQueues[proc->priority].head == priortyQueues[proc->priority].tail)
-    {
-        continue;
-    }
-    else
-    {
-        tmp1 = priortyQueues[proc->priority].head;
-        priortyQueues[proc->priority].head = tmp1.runQueueNext;
-        tmp2 = priortyQueues[proc->priority].tail;
-        priortyQueues[proc->priority].tail = tmp1;
-        tmp2->runQueueNext = tmp1;
-    }
-}
-
-void dispatcher(void)
-{
-    disableInterrupts();
-    if (curProcess == NULL)
-    {
-        curProcess = &(processTable[1]);
-        processTable[1].run_state = RUNNING;
-        curProcess->startTime = getCurTime();
-        USLOSS_ContextSwitch(NULL, &(proc_table[1].context));
-    }
-
-    for (int i = 1; i < 7; i++)
-    {
-        if (priortyQueues[i].head != NULL)
-        {
-            if (curProcess->priority > i)
-            {
-                if (curProcess->runnableStatus == RUNNING && curProcess->endStatus != TERMINATED)
-                {
-                    curProcess->runnableStatus = RUNNABLE;
-                }
-                Process *tmp = curProcess;
-                curProcess = priortyQueues[i].head;
-                curProcess->runnableStatus = RUNNING;
-                curProcess->startTime = getCurTime();
-                USLOSS_ContextSwitch(tmp->context, curProcess->context);
-                break;
-            }
-            else if (curProcess->priority == i)
-            {
-                if (curProcess->runnableStatus == RUNNING)
-                {
-                    if (priortyQueues[i].head->runQueueNext != NULL)
-                    {
-                        int appropriateTime = currentTime() - priortyQueues[i].head->startTime;
-                        if (appropriateTime >= 80000)
-                        {
-                            Process *tempHead = priortyQueues[i].head;
-                            tempHead.runnableStatus = RUNNABLE;
-                            moveBackQueue(tempHead);
-                            curProcess = priortyQueues[i].head;
-                            curProcess->runnableStatus = READY;
-                            USLOSS_ContextSwitch(tempHead.context, curProcess.context);
-                        }
-                        else
-                        {
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        break;
-                    }
-                }
-                else
-                {
-                    break;
-                }
-            }
-        }
-    }
-
-    // Special case when time runs out for program.
-    // if (curProcess->runnableStatus == RUNNING && (getCurTime() - curProcess->startTime) >= 80000)
-    // {
-    //     current->run_state = RUNNABLE;
-    //     moveBackQueue();
-    //     current->next_proc = NULL;
-    //     addQueue(curProcess);
-    // }
 }
 
 /**
