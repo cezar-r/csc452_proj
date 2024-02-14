@@ -1,4 +1,6 @@
 #include <usloss.h>
+#include <stdbool.h> 
+
 #define BLOCKED 3
 #define RUNNABLE 0
 #define RUNNING -21
@@ -6,6 +8,7 @@
 #define TERMINATED -5
 #define EMPTY 10
 #define OCCUPIED 20
+#define WAITING_ON_CHILD 1000
 
 typedef struct processQueue
 {
@@ -28,7 +31,7 @@ typedef struct Process
     // int (*startFunc)(char *);
     char *stack;
     USLOSS_Context context;
-    boolean waitingOnChild;
+    bool waitingOnChild;
     int startTime;
     struct Process *runQueueNext;
     struct Process *firstChild;

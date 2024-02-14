@@ -1,5 +1,5 @@
 /*
- Name- Soumay Agarwal
+ Name- Soumay Agarwal & Cezar Rata
  Course- CSC 452
  Description- This is the phase1a of the assignment, which implements the phase1_init, spork, join,
               quit_phase1a, getpid, dumpProcesses and TEMP_switchTo. This part is responsible for creating processes
@@ -183,8 +183,10 @@ int spork(char *name, int (*startFunc)(char *), char *arg,
     }
 
     addQueue(processTable[slot]);
+    dispatcher();
     return processTable[slot].pid;
 }
+
 
 /**
  * This function is responsible for joining the dead or terminated process
@@ -193,79 +195,105 @@ int spork(char *name, int (*startFunc)(char *), char *arg,
  * status- the out pointer which is given the dead child status
  * return: pid of the dead child
  */
-
 int join(int *status)
 {
     modeChecker("join");
-    if (status == NULL)
-        return -3;
 
-    if (curProcess->firstChild == NULL)
-    {
+    if (status == NULL) {
+        return -3;
+    }
+
+    if (curProcess->firstChild == NULL) {
+        return -2;  // No children to wait for
+    }
+
+    Process *child = curProcess->firstChild;
+    Process *prev = NULL;
+    Process *terminatedChild = NULL;
+
+    while (child != NULL) {
+        if (child->endStatus == TERMINATED) {
+            terminatedChild = child;
+            break;
+        }
+        prev = child;
+        child = child->nextSibling;
+    }
+
+    //fIf no terminated child is found, block the current process
+    if (terminatedChild == NULL) {
+        blockMe(WAITING_ON_CHILD);
+
+        // after being unblocked, search for the terminated child again
+        child = curProcess->firstChild;
+        prev = NULL;
+        while (child != NULL) {
+            if (child->endStatus == TERMINATED) {
+                terminatedChild = child;
+                break;
+            }
+            prev = child;
+            child = child->nextSibling;
+        }
+    }
+
+    if (terminatedChild == NULL) {
         return -2;
     }
 
-    // Checking for dead children of the curProcess
-    Process *genPointer = curProcess->firstChild;
-    // prev pointer will hold the dead child
-    Process *prev;
-    // if the firstchild is dead, pid points to it and the curProcess makes the next sibling
-    // the first child
-    if (genPointer->endStatus == TERMINATED)
-    {
-        curProcess->firstChild = curProcess->firstChild->nextSibling;
-        prev = genPointer;
+    *status = terminatedChild->runnableStatus;
+
+    if (prev == NULL) {
+        curProcess->firstChild = terminatedChild->nextSibling;
+    } else {
+        prev->nextSibling = terminatedChild->nextSibling;
     }
-    // otherwise we find the dead child by taversing the next siblings
-    else
-    {
-        while (genPointer->nextSibling->endStatus != TERMINATED)
-        {
-            genPointer = genPointer->nextSibling;
-        }
-        prev = genPointer->nextSibling;
-        genPointer->nextSibling = genPointer->nextSibling->nextSibling;
-    }
-    int curpid = prev->pid;
-    *status = processTable[curpid % MAXPROC].runnableStatus;
-    // freeing the child process stack and other fields, so that
-    // we can reuse the slot
-    free(processTable[curpid % MAXPROC].stack);
-    occupiedSlots -= 1;
-    processTable[curpid % MAXPROC].name = "";
-    processTable[curpid % MAXPROC].pid = 0;
-    processTable[curpid % MAXPROC].priority = 0;
-    processTable[curpid % MAXPROC].parentPid = -50;
-    processTable[curpid % MAXPROC].tableStatus = EMPTY;
-    processTable[curpid % MAXPROC].runnableStatus = RUNNABLE;
-    processTable[curpid % MAXPROC].stack = NULL;
-    processTable[curpid % MAXPROC].runQueueNext = NULL;
-    processTable[curpid % MAXPROC].nextSibling = NULL;
-    processTable[curpid % MAXPROC].firstChild = NULL;
-    return curpid;
+
+    int terminatedPid = terminatedChild->pid;
+
+    free(terminatedChild->stack);
+    terminatedChild->name = "";
+    terminatedChild->pid = 0;
+    terminatedChild->priority = 0;
+    terminatedChild->parentPid = -1;
+    terminatedChild->tableStatus = EMPTY;
+    terminatedChild->runnableStatus = INITIALIZED;
+    terminatedChild->stack = NULL;
+    terminatedChild->runQueueNext = NULL;
+    terminatedChild->nextSibling = NULL;
+    terminatedChild->firstChild = NULL;
+
+    occupiedSlots--;
+
+    return terminatedPid;
 }
+
 
 /**
  * This function is responsible for termination the current process by setting its
  * end status as terminated. The runnable status of the current process is changed to
- * the status passed. Due to the lack of dispatcher we use Temp switch to switch to
- * another process.
+ * the status passed. It then calls dispatcher to switch processes
  * status- provided status
- * switchToPid- provided pid of process to switch to
  */
-
-void quit_phase_1a(int status, int switchToPid)
+void quit(int status)
 {
-    modeChecker("quit_phase_1a");
-    if (curProcess->firstChild != NULL)
-    {
+    modeChecker("quit");
+
+    if (curProcess->firstChild != NULL) {
         USLOSS_Console("ERROR: Process pid %d called quit() while it still had children.\n", curProcess->pid);
         USLOSS_Halt(0);
     }
+
     curProcess->endStatus = TERMINATED;
     curProcess->runnableStatus = status;
 
-    TEMP_switchTo(switchToPid);
+    Process *parent = &processTable[curProcess->parentPid % MAXPROC];
+    if (parent->runnableStatus == WAITING_ON_CHILD) {
+        // unblock the parent if it's waiting for a child to terminate
+        unblockProc(curProcess->parentPid);
+    }
+
+    dispatcher();
 }
 
 /**
@@ -376,7 +404,7 @@ void dispatcher(void)
         curProcess = &(processTable[1]);
         processTable[1].run_state = RUNNING;
         curProcess->startTime = getCurTime();
-        USLOSS_ContextSwitch(NULL, &(proc_table[1].context));
+        USLOSS_ContextSwitch(NULL, &(processTable[1].context));
     }
 
     for (int i = 1; i < 7; i++)
@@ -440,24 +468,48 @@ void dispatcher(void)
     // }
 }
 
-/**
- * This function is responsible for context switching to a process whose pid is provided.
- * pid- the provided pid of a process
- */
 
-void TEMP_switchTo(int pid)
+/**
+ * Blocks the current process with the specified newStatus.
+ * The process will remain blocked until it is unblocked by unblockProc.
+ * The newStatus must be greater than 10.
+ * 
+ * newStatus- The reason for blocking the process.
+ */
+void blockMe(int newStatus)
 {
-    modeChecker("TEMP_switchTo");
-    if (pid == 1)
-    {
-        curProcess = &(processTable[1]);
-        USLOSS_ContextSwitch(NULL, &(processTable[1].context));
+    modeChecker("blockMe");
+
+    if (newStatus <= 10) {
+        USLOSS_Console("ERROR: blockMe called with invalid newStatus <= 10.\n");
+        USLOSS_Halt(0);
     }
-    else
-    {
-        int slotPosition = pid % MAXPROC;
-        Process *temp = curProcess;
-        curProcess = &(processTable[slotPosition]);
-        USLOSS_ContextSwitch(&(temp->context), &(processTable[slotPosition].context));
+
+    curProcess->runnableStatus = newStatus;
+    dispatcher();
+}
+
+/**
+ * Unblocks the process specified by pid.
+ * The process must have been previously blocked by blockMe.
+ * 
+ * pid- The PID of the process to unblock.
+ * returns 0 on success, -2 if the process is not blocked or does not exist.
+ */
+int unblockProc(int pid)
+{
+    modeChecker("unblockProc");
+
+    int slot = pid % MAXPROC;
+    Process *proc = &processTable[slot];
+
+    if (proc->pid != pid || proc->runnableStatus <= 10) {
+        return -2;
     }
+
+    proc->runnableStatus = RUNNABLE;
+
+    addQueue(proc);
+    dispatcher();
+    return 0;
 }
